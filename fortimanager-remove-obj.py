@@ -270,7 +270,7 @@ def process_group(session, group_name, remove=False):
         # 🛑 Do not update policies unless --remove AND group is empty
         if remove and not members:
             for pkg, pid, pname, src, dst in used_in:
-                    print(f"⚙️ Updating policy {pid} in package '{pkg}'...")
+                    print(f"⚙️ Updating policy {pid} ({pname}) in package '{pkg}'...")
                     if group_name in src and len(src) == 1:
                         delete_policy(session, pkg, pid)
                     elif group_name in src:
