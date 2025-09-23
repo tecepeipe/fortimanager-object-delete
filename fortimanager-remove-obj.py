@@ -54,7 +54,7 @@ def logout(session):
     }
     requests.post(url, json=payload, verify=False)
 
-def list_policy_packages(session):
+def get_policy_packages(session):
     url = f"{FMG_HOST}/jsonrpc"
     payload = {
         "method": "get",
@@ -186,7 +186,7 @@ def process_object(session, obj_name, remove=False):
 
     found_anywhere = False
 
-    for package in list_policy_packages(session):
+    for package in get_policy_packages(session):
         policies = get_firewall_policies(session, package)
         used = False
         print(f"\n📦 Policy package: {package}")
@@ -225,7 +225,7 @@ def process_object(session, obj_name, remove=False):
     if remove:
         remove_from_address_groups(session, obj_name)
         delete_address_object(session, obj_name)
-        cleanup_empty_unused_groups(session)
+        #cleanup_empty_unused_groups(session)
 
 def process_group(session, group_name, remove=False):
     print(f"\n📦 Processing address group: {group_name}")
@@ -252,7 +252,7 @@ def process_group(session, group_name, remove=False):
 
     # Check usage in policies
     used_in = []
-    for package in list_policy_packages(session):
+    for package in get_policy_packages(session):
         policies = get_firewall_policies(session, package)
         for policy in policies:
             pid = policy.get("policyid")
@@ -312,6 +312,75 @@ def process_group(session, group_name, remove=False):
             requests.post(f"{FMG_HOST}/jsonrpc", json=delete_payload, verify=False)
             print(f"🧹 Deleted unused address group '{group_name}'")
         
+def process_group_forced(session, group_name, remove=False):
+    # similar function, but this one was invoked by user explicitly on this group
+    print(f"\n📦 Processing address group: {group_name}")
+
+    # Get group members
+    url = f"{FMG_HOST}/jsonrpc"
+    payload = {
+        "method": "get",
+        "params": [{
+            "url": f"/pm/config/adom/{ADOM}/obj/firewall/addrgrp/{group_name}"
+        }],
+        "session": session,
+        "id": 1
+    }
+    response = requests.post(url, json=payload, verify=False)
+    result = response.json()
+
+    try:
+        members = result["result"][0]["data"].get("member", [])
+        print(f"📚 Members: {', '.join(members) if members else 'None'}")
+    except Exception:
+        print(f"⚠️ Failed to retrieve members for group '{group_name}'")
+        return
+
+    # Check usage in policies
+    used_in = []
+    for package in get_policy_packages(session):
+        policies = get_firewall_policies(session, package)
+        for policy in policies:
+            pid = policy.get("policyid")
+            name = policy.get("name", "Unnamed")
+            src = policy.get("srcaddr", [])
+            dst = policy.get("dstaddr", [])
+            if group_name in src or group_name in dst:
+                used_in.append((package, pid, name, src, dst))
+
+    if used_in:
+        print(f"🔍 Group '{group_name}' is used in:")
+        for pkg, pid, pname, _, _ in used_in:
+            print(f"   - Policy ID {pid} ({pname}) in package '{pkg}'")
+
+        if remove:
+            for pkg, pid, pname, src, dst in used_in:
+                    print(f"⚙️ Updating policy {pid} ({pname}) in package '{pkg}'...")
+                    if group_name in src and len(src) == 1:
+                        delete_policy(session, pkg, pid)
+                    elif group_name in src:
+                        src.remove(group_name)
+                        update_policy(session, pkg, pid, "srcaddr", src)
+
+                    if group_name in dst and len(dst) == 1:
+                        delete_policy(session, pkg, pid)
+                    elif group_name in dst:
+                        dst.remove(group_name)
+                        update_policy(session, pkg, pid, "dstaddr", dst)
+            # Group was explicitly required to be deleted
+            delete_payload = {
+                "method": "delete",
+                "params": [{
+                    "url": f"/pm/config/adom/{ADOM}/obj/firewall/addrgrp/{group_name}"
+                }],
+                "session": session,
+                "id": 1
+            }
+            requests.post(f"{FMG_HOST}/jsonrpc", json=delete_payload, verify=False)
+            print(f"🧹 Deleted address group (explicitly requested from input) '{group_name}'")
+    else:
+        print(f"ℹ️ Group '{group_name}' is NOT used in any policy.")
+    
 def load_objects_from_file(file_path):
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
@@ -362,7 +431,7 @@ def check_and_cleanup_group_usage(session, group_name):
 
         # Check usage across all policy packages
         used_in = []
-        for package in list_policy_packages(session):
+        for package in get_policy_packages(session):
             policies = get_firewall_policies(session, package)
             for policy in policies:
                 pid = policy.get("policyid")
@@ -447,7 +516,7 @@ def cleanup_empty_unused_groups(session):
             if not members:
                 # Check if group is used in any policy
                 used = False
-                for package in list_policy_packages(session):
+                for package in get_policy_packages(session):
                     policies = get_firewall_policies(session, package)
                     for policy in policies:
                         if name in policy.get("srcaddr", []) or name in policy.get("dstaddr", []):
@@ -504,7 +573,7 @@ def main():
             if obj_type == "address":
                 process_object(session, name, remove=args.remove)
             elif obj_type == "group":
-                process_group(session, name, remove=args.remove)
+                process_group_forced(session, name, remove=args.remove)
             else:
                 print(f"❌ Object or group '{name}' not found in FortiManager.")
     finally:
